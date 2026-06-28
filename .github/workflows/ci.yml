@@ -1,0 +1,181 @@
+# ─────────────────────────────────────────────────────────────────────
+# PROMPTVAULT CI/CD PIPELINE
+#
+# SKILL: GitHub Actions, service containers, matrix testing,
+#        Docker build in CI, coverage reporting, secrets management
+#
+# This workflow runs on every push and pull request to main.
+# It runs in GitHub's free Linux runners — no cost at all.
+#
+# Jobs:
+#   1. test  → install deps, start PostgreSQL + Redis, run pytest
+#   2. build → build Docker image to verify Dockerfile is valid
+# ─────────────────────────────────────────────────────────────────────
+
+name: PromptVault CI
+
+# ── TRIGGERS ─────────────────────────────────────────────────────────
+# Run on every push to main branch
+# Run on every pull request targeting main branch
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# ── ENVIRONMENT VARIABLES ─────────────────────────────────────────────
+# Available to all jobs and steps in this workflow
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+
+  # ───────────────────────────────────────────────────────────────────
+  # JOB 1: TEST
+  #
+  # Runs the full pytest suite with real PostgreSQL and Redis
+  # using GitHub Actions service containers.
+  #
+  # Service containers are Docker containers that GitHub Actions
+  # starts alongside your job. Your code reaches them via localhost
+  # just like on your local machine.
+  # ───────────────────────────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    # ── SERVICE CONTAINERS ──────────────────────────────────────────
+    # GitHub spins these up before your steps run.
+    # They are reachable at localhost on the specified ports.
+    services:
+
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: promptvault_user
+          POSTGRES_PASSWORD: promptvault_pass
+          POSTGRES_DB: promptvault
+        ports:
+          - 5432:5432
+        # Wait until PostgreSQL is actually ready before running tests
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+
+      # ── STEP 1: Checkout code ──────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── STEP 2: Set up Python ──────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          # Cache pip downloads between runs
+          # If requirements.txt has not changed, pip install is skipped
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # ── STEP 3: Install dependencies ──────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── STEP 4: Create test database ──────────────────────────────
+      # Our tests use promptvault_test (not promptvault)
+      # The postgres service only created promptvault
+      # We create the test database here before running tests
+      - name: Create test database
+        env:
+          PGPASSWORD: promptvault_pass
+        run: |
+          psql -h localhost -U promptvault_user -d promptvault \
+            -c "CREATE DATABASE promptvault_test;"
+
+      # ── STEP 5: Run tests with coverage ───────────────────────────
+      - name: Run pytest with coverage
+        env:
+          # These env vars are read by our app's Settings (Pydantic)
+          APP_NAME: PromptVault
+          APP_VERSION: "0.1.0"
+          DEBUG: "true"
+          DATABASE_URL: postgresql+asyncpg://promptvault_user:promptvault_pass@localhost:5432/promptvault
+          REDIS_URL: redis://localhost:6379/0
+          REDIS_TTL_SECONDS: "300"
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+        run: |
+          pytest \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=50 \
+            -v
+
+      # ── STEP 6: Upload coverage report ────────────────────────────
+      # Uploads coverage.xml so GitHub can display it
+      # This is free with GitHub Actions
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()    # Upload even if tests fail — useful for debugging
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────────
+  # JOB 2: DOCKER BUILD
+  #
+  # Verifies that the Dockerfile builds successfully.
+  # Runs in parallel with the test job — does not wait for tests.
+  #
+  # We do NOT push to a registry here (that would require DockerHub
+  # credentials and paid plans). We just verify the build succeeds.
+  # A successful build proves your Dockerfile is correct.
+  # ───────────────────────────────────────────────────────────────────
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Set up Docker Buildx — the modern Docker build engine
+      # Supports caching, multi-platform builds, and faster builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the Docker image
+      # --file Dockerfile → explicit path to Dockerfile
+      # --load → load into local Docker daemon (not push to registry)
+      # --cache-from/to → cache layers between CI runs (faster rebuilds)
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false     # Do not push — just build to verify
+          tags: promptvault:ci-test
+          # Build args if needed
+          build-args: |
+            PYTHON_VERSION=3.11
+          # Cache Docker layers between runs
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
