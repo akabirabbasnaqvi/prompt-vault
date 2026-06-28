@@ -2,7 +2,7 @@
 
 PromptVault is an AI prompt lifecycle management API for versioning, organizing, testing, and evaluating prompts in a production-style workflow.
 
-## What it does
+## Features
 
 - Manage workspaces and prompts through a REST API
 - Track prompt evaluation jobs with background Celery workers
@@ -17,7 +17,7 @@ PromptVault is an AI prompt lifecycle management API for versioning, organizing,
 - PostgreSQL
 - Redis
 - Celery
-- SQLAlchemy 2.x
+- SQLAlchemy
 - Alembic
 - Docker
 - GitHub Actions
@@ -98,10 +98,10 @@ pytest tests/unit/test_schemas.py::TestWorkspaceCreateSchema::test_valid_workspa
 
 Pytest is already configured to generate coverage output and an HTML report in `htmlcov/`.
 
-Open the report at:
+Open the generated report:
 
-```text
-D:\PromptVault(Project)\htmlcov\index.html
+```bash
+htmlcov/index.html
 ```
 
 ## Local Development Notes
