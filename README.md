@@ -125,8 +125,3 @@ The repository includes GitHub Actions for:
 
 - running tests against PostgreSQL and Redis service containers
 - building the Docker image to verify the container configuration
-
-## Notes
-
-- Replace `YOUR_USERNAME` in any badge URLs with your GitHub username.
-- The test suite still uses a dedicated PostgreSQL test database and real ORM models, so it is not fully database-free.
