@@ -86,15 +86,15 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           # Cache pip downloads between runs
-          # If requirements.txt has not changed, pip install is skipped
+          # If requirements.ci.txt has not changed, pip install is skipped
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements.ci.txt
 
       # ── STEP 3: Install dependencies ──────────────────────────────
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.ci.txt
 
       # ── STEP 4: Create test database ──────────────────────────────
       # Our tests use promptvault_test (not promptvault)
