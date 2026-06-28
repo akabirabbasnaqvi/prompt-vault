@@ -10,7 +10,6 @@ from httpx import AsyncClient, ASGITransport
 import fakeredis.aioredis
 import psycopg2
 
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
     AsyncSession,
@@ -71,28 +70,19 @@ def setup_test_database():
     sync_engine.dispose()
 
 
-# ─────────────────────────────────────────────────────────────────────
-# ASYNC DB SESSION — wrap each test in a transaction that rolls back
-# ─────────────────────────────────────────────────────────────────────
-@pytest_asyncio.fixture(scope="session")
-async def async_engine():
-    """Shared async engine for the whole test session."""
+@pytest_asyncio.fixture
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Provides an isolated async DB session per test.
+
+    Each test gets a fresh engine and a transaction that rolls back after
+    the test finishes. That avoids table truncation while also avoiding
+    cross-test event loop teardown issues in pytest-asyncio.
+    """
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
     )
-    yield engine
-    await engine.dispose()
-
-
-@pytest_asyncio.fixture
-async def db_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
-    """Provides an isolated async DB session per test.
-
-    The outer transaction is rolled back after each test, so data changes
-    never leak between tests and we avoid expensive table truncation.
-    """
-    connection = await async_engine.connect()
+    connection = await engine.connect()
     transaction = await connection.begin()
     session_factory = async_sessionmaker(
         bind=connection,
@@ -103,19 +93,13 @@ async def db_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
     )
     session = session_factory()
 
-    @event.listens_for(session.sync_session, "after_transaction_end")
-    def restart_nested_transaction(session_obj, transaction_obj):
-        if transaction_obj.nested and not transaction_obj._parent.nested:
-            session_obj.begin_nested()
-
-    await session.begin_nested()
-
     try:
         yield session
     finally:
         await session.close()
         await transaction.rollback()
         await connection.close()
+        await engine.dispose()
 
 
 # ─────────────────────────────────────────────────────────────────────
