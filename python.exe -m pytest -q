@@ -1,0 +1,593 @@
+[1mdiff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml[m
+[1mindex 4964000..f0fd13c 100644[m
+[1m--- a/.github/workflows/ci.yml[m
+[1m+++ b/.github/workflows/ci.yml[m
+[36m@@ -1,181 +1,181 @@[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# PROMPTVAULT CI/CD PIPELINE[m
+[31m-#[m
+[31m-# SKILL: GitHub Actions, service containers, matrix testing,[m
+[31m-#        Docker build in CI, coverage reporting, secrets management[m
+[31m-#[m
+[31m-# This workflow runs on every push and pull request to main.[m
+[31m-# It runs in GitHub's free Linux runners — no cost at all.[m
+[31m-#[m
+[31m-# Jobs:[m
+[31m-#   1. test  → install deps, start PostgreSQL + Redis, run pytest[m
+[31m-#   2. build → build Docker image to verify Dockerfile is valid[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-[m
+[31m-name: PromptVault CI[m
+[31m-[m
+[31m-# ── TRIGGERS ─────────────────────────────────────────────────────────[m
+[31m-# Run on every push to main branch[m
+[31m-# Run on every pull request targeting main branch[m
+[31m-on:[m
+[31m-  push:[m
+[31m-    branches: [ main ][m
+[31m-  pull_request:[m
+[31m-    branches: [ main ][m
+[31m-[m
+[31m-# ── ENVIRONMENT VARIABLES ─────────────────────────────────────────────[m
+[31m-# Available to all jobs and steps in this workflow[m
+[31m-env:[m
+[31m-  PYTHON_VERSION: "3.11"[m
+[31m-[m
+[31m-jobs:[m
+[31m-[m
+[31m-  # ───────────────────────────────────────────────────────────────────[m
+[31m-  # JOB 1: TEST[m
+[31m-  #[m
+[31m-  # Runs the full pytest suite with real PostgreSQL and Redis[m
+[31m-  # using GitHub Actions service containers.[m
+[31m-  #[m
+[31m-  # Service containers are Docker containers that GitHub Actions[m
+[31m-  # starts alongside your job. Your code reaches them via localhost[m
+[31m-  # just like on your local machine.[m
+[31m-  # ───────────────────────────────────────────────────────────────────[m
+[31m-  test:[m
+[31m-    name: Run Tests[m
+[31m-    runs-on: ubuntu-latest[m
+[31m-[m
+[31m-    # ── SERVICE CONTAINERS ──────────────────────────────────────────[m
+[31m-    # GitHub spins these up before your steps run.[m
+[31m-    # They are reachable at localhost on the specified ports.[m
+[31m-    services:[m
+[31m-[m
+[31m-      postgres:[m
+[31m-        image: postgres:16-alpine[m
+[31m-        env:[m
+[31m-          POSTGRES_USER: promptvault_user[m
+[31m-          POSTGRES_PASSWORD: promptvault_pass[m
+[31m-          POSTGRES_DB: promptvault[m
+[31m-        ports:[m
+[31m-          - 5432:5432[m
+[31m-        # Wait until PostgreSQL is actually ready before running tests[m
+[31m-        options: >-[m
+[31m-          --health-cmd pg_isready[m
+[31m-          --health-interval 5s[m
+[31m-          --health-timeout 5s[m
+[31m-          --health-retries 5[m
+[31m-[m
+[31m-      redis:[m
+[31m-        image: redis:7-alpine[m
+[31m-        ports:[m
+[31m-          - 6379:6379[m
+[31m-        options: >-[m
+[31m-          --health-cmd "redis-cli ping"[m
+[31m-          --health-interval 5s[m
+[31m-          --health-timeout 3s[m
+[31m-          --health-retries 5[m
+[31m-[m
+[31m-    steps:[m
+[31m-[m
+[31m-      # ── STEP 1: Checkout code ──────────────────────────────────────[m
+[31m-      - name: Checkout repository[m
+[31m-        uses: actions/checkout@v4[m
+[31m-[m
+[31m-      # ── STEP 2: Set up Python ──────────────────────────────────────[m
+[31m-      - name: Set up Python ${{ env.PYTHON_VERSION }}[m
+[31m-        uses: actions/setup-python@v5[m
+[31m-        with:[m
+[31m-          python-version: ${{ env.PYTHON_VERSION }}[m
+[31m-          # Cache pip downloads between runs[m
+[31m-          # If requirements.txt has not changed, pip install is skipped[m
+[31m-          cache: pip[m
+[31m-          cache-dependency-path: requirements.txt[m
+[31m-[m
+[31m-      # ── STEP 3: Install dependencies ──────────────────────────────[m
+[31m-      - name: Install dependencies[m
+[31m-        run: |[m
+[31m-          python -m pip install --upgrade pip[m
+[31m-          pip install -r requirements.txt[m
+[31m-[m
+[31m-      # ── STEP 4: Create test database ──────────────────────────────[m
+[31m-      # Our tests use promptvault_test (not promptvault)[m
+[31m-      # The postgres service only created promptvault[m
+[31m-      # We create the test database here before running tests[m
+[31m-      - name: Create test database[m
+[31m-        env:[m
+[31m-          PGPASSWORD: promptvault_pass[m
+[31m-        run: |[m
+[31m-          psql -h localhost -U promptvault_user -d promptvault \[m
+[31m-            -c "CREATE DATABASE promptvault_test;"[m
+[31m-[m
+[31m-      # ── STEP 5: Run tests with coverage ───────────────────────────[m
+[31m-      - name: Run pytest with coverage[m
+[31m-        env:[m
+[31m-          # These env vars are read by our app's Settings (Pydantic)[m
+[31m-          APP_NAME: PromptVault[m
+[31m-          APP_VERSION: "0.1.0"[m
+[31m-          DEBUG: "true"[m
+[31m-          DATABASE_URL: postgresql+asyncpg://promptvault_user:promptvault_pass@localhost:5432/promptvault[m
+[31m-          REDIS_URL: redis://localhost:6379/0[m
+[31m-          REDIS_TTL_SECONDS: "300"[m
+[31m-          CELERY_BROKER_URL: redis://localhost:6379/1[m
+[31m-          CELERY_RESULT_BACKEND: redis://localhost:6379/2[m
+[31m-        run: |[m
+[31m-          pytest \[m
+[31m-            --cov=app \[m
+[31m-            --cov-report=term-missing \[m
+[31m-            --cov-report=xml:coverage.xml \[m
+[31m-            --cov-fail-under=50 \[m
+[31m-            -v[m
+[31m-[m
+[31m-      # ── STEP 6: Upload coverage report ────────────────────────────[m
+[31m-      # Uploads coverage.xml so GitHub can display it[m
+[31m-      # This is free with GitHub Actions[m
+[31m-      - name: Upload coverage report[m
+[31m-        uses: actions/upload-artifact@v4[m
+[31m-        if: always()    # Upload even if tests fail — useful for debugging[m
+[31m-        with:[m
+[31m-          name: coverage-report[m
+[31m-          path: coverage.xml[m
+[31m-          retention-days: 7[m
+[31m-[m
+[31m-  # ───────────────────────────────────────────────────────────────────[m
+[31m-  # JOB 2: DOCKER BUILD[m
+[31m-  #[m
+[31m-  # Verifies that the Dockerfile builds successfully.[m
+[31m-  # Runs in parallel with the test job — does not wait for tests.[m
+[31m-  #[m
+[31m-  # We do NOT push to a registry here (that would require DockerHub[m
+[31m-  # credentials and paid plans). We just verify the build succeeds.[m
+[31m-  # A successful build proves your Dockerfile is correct.[m
+[31m-  # ───────────────────────────────────────────────────────────────────[m
+[31m-  docker-build:[m
+[31m-    name: Build Docker Image[m
+[31m-    runs-on: ubuntu-latest[m
+[31m-[m
+[31m-    steps:[m
+[31m-[m
+[31m-      - name: Checkout repository[m
+[31m-        uses: actions/checkout@v4[m
+[31m-[m
+[31m-      # Set up Docker Buildx — the modern Docker build engine[m
+[31m-      # Supports caching, multi-platform builds, and faster builds[m
+[31m-      - name: Set up Docker Buildx[m
+[31m-        uses: docker/setup-buildx-action@v3[m
+[31m-[m
+[31m-      # Build the Docker image[m
+[31m-      # --file Dockerfile → explicit path to Dockerfile[m
+[31m-      # --load → load into local Docker daemon (not push to registry)[m
+[31m-      # --cache-from/to → cache layers between CI runs (faster rebuilds)[m
+[31m-      - name: Build Docker image[m
+[31m-        uses: docker/build-push-action@v5[m
+[31m-        with:[m
+[31m-          context: .[m
+[31m-          file: ./Dockerfile[m
+[31m-          push: false     # Do not push — just build to verify[m
+[31m-          tags: promptvault:ci-test[m
+[31m-          # Build args if needed[m
+[31m-          build-args: |[m
+[31m-            PYTHON_VERSION=3.11[m
+[31m-          # Cache Docker layers between runs[m
+[31m-          cache-from: type=gha[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# PROMPTVAULT CI/CD PIPELINE[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# SKILL: GitHub Actions, service containers, matrix testing,[m[41m[m
+[32m+[m[32m#        Docker build in CI, coverage reporting, secrets management[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# This workflow runs on every push and pull request to main.[m[41m[m
+[32m+[m[32m# It runs in GitHub's free Linux runners — no cost at all.[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# Jobs:[m[41m[m
+[32m+[m[32m#   1. test  → install deps, start PostgreSQL + Redis, run pytest[m[41m[m
+[32m+[m[32m#   2. build → build Docker image to verify Dockerfile is valid[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32mname: PromptVault CI[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ── TRIGGERS ─────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# Run on every push to main branch[m[41m[m
+[32m+[m[32m# Run on every pull request targeting main branch[m[41m[m
+[32m+[m[32mon:[m[41m[m
+[32m+[m[32m  push:[m[41m[m
+[32m+[m[32m    branches: [ main ][m[41m[m
+[32m+[m[32m  pull_request:[m[41m[m
+[32m+[m[32m    branches: [ main ][m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ── ENVIRONMENT VARIABLES ─────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# Available to all jobs and steps in this workflow[m[41m[m
+[32m+[m[32menv:[m[41m[m
+[32m+[m[32m  PYTHON_VERSION: "3.11"[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32mjobs:[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m  # ───────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m  # JOB 1: TEST[m[41m[m
+[32m+[m[32m  #[m[41m[m
+[32m+[m[32m  # Runs the full pytest suite with real PostgreSQL and Redis[m[41m[m
+[32m+[m[32m  # using GitHub Actions service containers.[m[41m[m
+[32m+[m[32m  #[m[41m[m
+[32m+[m[32m  # Service containers are Docker containers that GitHub Actions[m[41m[m
+[32m+[m[32m  # starts alongside your job. Your code reaches them via localhost[m[41m[m
+[32m+[m[32m  # just like on your local machine.[m[41m[m
+[32m+[m[32m  # ───────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m  test:[m[41m[m
+[32m+[m[32m    name: Run Tests[m[41m[m
+[32m+[m[32m    runs-on: ubuntu-latest[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m    # ── SERVICE CONTAINERS ──────────────────────────────────────────[m[41m[m
+[32m+[m[32m    # GitHub spins these up before your steps run.[m[41m[m
+[32m+[m[32m    # They are reachable at localhost on the specified ports.[m[41m[m
+[32m+[m[32m    services:[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      postgres:[m[41m[m
+[32m+[m[32m        image: postgres:16-alpine[m[41m[m
+[32m+[m[32m        env:[m[41m[m
+[32m+[m[32m          POSTGRES_USER: promptvault_user[m[41m[m
+[32m+[m[32m          POSTGRES_PASSWORD: promptvault_pass[m[41m[m
+[32m+[m[32m          POSTGRES_DB: promptvault[m[41m[m
+[32m+[m[32m        ports:[m[41m[m
+[32m+[m[32m          - 5432:5432[m[41m[m
+[32m+[m[32m        # Wait until PostgreSQL is actually ready before running tests[m[41m[m
+[32m+[m[32m        options: >-[m[41m[m
+[32m+[m[32m          --health-cmd pg_isready[m[41m[m
+[32m+[m[32m          --health-interval 5s[m[41m[m
+[32m+[m[32m          --health-timeout 5s[m[41m[m
+[32m+[m[32m          --health-retries 5[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      redis:[m[41m[m
+[32m+[m[32m        image: redis:7-alpine[m[41m[m
+[32m+[m[32m        ports:[m[41m[m
+[32m+[m[32m          - 6379:6379[m[41m[m
+[32m+[m[32m        options: >-[m[41m[m
+[32m+[m[32m          --health-cmd "redis-cli ping"[m[41m[m
+[32m+[m[32m          --health-interval 5s[m[41m[m
+[32m+[m[32m          --health-timeout 3s[m[41m[m
+[32m+[m[32m          --health-retries 5[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m    steps:[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # ── STEP 1: Checkout code ──────────────────────────────────────[m[41m[m
+[32m+[m[32m      - name: Checkout repository[m[41m[m
+[32m+[m[32m        uses: actions/checkout@v4[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # ── STEP 2: Set up Python ──────────────────────────────────────[m[41m[m
+[32m+[m[32m      - name: Set up Python ${{ env.PYTHON_VERSION }}[m[41m[m
+[32m+[m[32m        uses: actions/setup-python@v5[m[41m[m
+[32m+[m[32m        with:[m[41m[m
+[32m+[m[32m          python-version: ${{ env.PYTHON_VERSION }}[m[41m[m
+[32m+[m[32m          # Cache pip downloads between runs[m[41m[m
+[32m+[m[32m          # If requirements.ci.txt has not changed, pip install is skipped[m[41m[m
+[32m+[m[32m          cache: pip[m[41m[m
+[32m+[m[32m          cache-dependency-path: requirements.ci.txt[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # ── STEP 3: Install dependencies ──────────────────────────────[m[41m[m
+[32m+[m[32m      - name: Install dependencies[m[41m[m
+[32m+[m[32m        run: |[m[41m[m
+[32m+[m[32m          python -m pip install --upgrade pip[m[41m[m
+[32m+[m[32m          pip install -r requirements.ci.txt[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # ── STEP 4: Create test database ──────────────────────────────[m[41m[m
+[32m+[m[32m      # Our tests use promptvault_test (not promptvault)[m[41m[m
+[32m+[m[32m      # The postgres service only created promptvault[m[41m[m
+[32m+[m[32m      # We create the test database here before running tests[m[41m[m
+[32m+[m[32m      - name: Create test database[m[41m[m
+[32m+[m[32m        env:[m[41m[m
+[32m+[m[32m          PGPASSWORD: promptvault_pass[m[41m[m
+[32m+[m[32m        run: |[m[41m[m
+[32m+[m[32m          psql -h localhost -U promptvault_user -d promptvault \[m[41m[m
+[32m+[m[32m            -c "CREATE DATABASE promptvault_test;"[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # ── STEP 5: Run tests with coverage ───────────────────────────[m[41m[m
+[32m+[m[32m      - name: Run pytest with coverage[m[41m[m
+[32m+[m[32m        env:[m[41m[m
+[32m+[m[32m          # These env vars are read by our app's Settings (Pydantic)[m[41m[m
+[32m+[m[32m          APP_NAME: PromptVault[m[41m[m
+[32m+[m[32m          APP_VERSION: "0.1.0"[m[41m[m
+[32m+[m[32m          DEBUG: "true"[m[41m[m
+[32m+[m[32m          DATABASE_URL: postgresql+asyncpg://promptvault_user:promptvault_pass@localhost:5432/promptvault[m[41m[m
+[32m+[m[32m          REDIS_URL: redis://localhost:6379/0[m[41m[m
+[32m+[m[32m          REDIS_TTL_SECONDS: "300"[m[41m[m
+[32m+[m[32m          CELERY_BROKER_URL: redis://localhost:6379/1[m[41m[m
+[32m+[m[32m          CELERY_RESULT_BACKEND: redis://localhost:6379/2[m[41m[m
+[32m+[m[32m        run: |[m[41m[m
+[32m+[m[32m          pytest \[m[41m[m
+[32m+[m[32m            --cov=app \[m[41m[m
+[32m+[m[32m            --cov-report=term-missing \[m[41m[m
+[32m+[m[32m            --cov-report=xml:coverage.xml \[m[41m[m
+[32m+[m[32m            --cov-fail-under=50 \[m[41m[m
+[32m+[m[32m            -v[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # ── STEP 6: Upload coverage report ────────────────────────────[m[41m[m
+[32m+[m[32m      # Uploads coverage.xml so GitHub can display it[m[41m[m
+[32m+[m[32m      # This is free with GitHub Actions[m[41m[m
+[32m+[m[32m      - name: Upload coverage report[m[41m[m
+[32m+[m[32m        uses: actions/upload-artifact@v4[m[41m[m
+[32m+[m[32m        if: always()    # Upload even if tests fail — useful for debugging[m[41m[m
+[32m+[m[32m        with:[m[41m[m
+[32m+[m[32m          name: coverage-report[m[41m[m
+[32m+[m[32m          path: coverage.xml[m[41m[m
+[32m+[m[32m          retention-days: 7[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m  # ───────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m  # JOB 2: DOCKER BUILD[m[41m[m
+[32m+[m[32m  #[m[41m[m
+[32m+[m[32m  # Verifies that the Dockerfile builds successfully.[m[41m[m
+[32m+[m[32m  # Runs in parallel with the test job — does not wait for tests.[m[41m[m
+[32m+[m[32m  #[m[41m[m
+[32m+[m[32m  # We do NOT push to a registry here (that would require DockerHub[m[41m[m
+[32m+[m[32m  # credentials and paid plans). We just verify the build succeeds.[m[41m[m
+[32m+[m[32m  # A successful build proves your Dockerfile is correct.[m[41m[m
+[32m+[m[32m  # ───────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m  docker-build:[m[41m[m
+[32m+[m[32m    name: Build Docker Image[m[41m[m
+[32m+[m[32m    runs-on: ubuntu-latest[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m    steps:[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      - name: Checkout repository[m[41m[m
+[32m+[m[32m        uses: actions/checkout@v4[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # Set up Docker Buildx — the modern Docker build engine[m[41m[m
+[32m+[m[32m      # Supports caching, multi-platform builds, and faster builds[m[41m[m
+[32m+[m[32m      - name: Set up Docker Buildx[m[41m[m
+[32m+[m[32m        uses: docker/setup-buildx-action@v3[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m      # Build the Docker image[m[41m[m
+[32m+[m[32m      # --file Dockerfile → explicit path to Dockerfile[m[41m[m
+[32m+[m[32m      # --load → load into local Docker daemon (not push to registry)[m[41m[m
+[32m+[m[32m      # --cache-from/to → cache layers between CI runs (faster rebuilds)[m[41m[m
+[32m+[m[32m      - name: Build Docker image[m[41m[m
+[32m+[m[32m        uses: docker/build-push-action@v5[m[41m[m
+[32m+[m[32m        with:[m[41m[m
+[32m+[m[32m          context: .[m[41m[m
+[32m+[m[32m          file: ./Dockerfile[m[41m[m
+[32m+[m[32m          push: false     # Do not push — just build to verify[m[41m[m
+[32m+[m[32m          tags: promptvault:ci-test[m[41m[m
+[32m+[m[32m          # Build args if needed[m[41m[m
+[32m+[m[32m          build-args: |[m[41m[m
+[32m+[m[32m            PYTHON_VERSION=3.11[m[41m[m
+[32m+[m[32m          # Cache Docker layers between runs[m[41m[m
+[32m+[m[32m          cache-from: type=gha[m[41m[m
+           cache-to: type=gha,mode=max[m
+\ No newline at end of file[m
+[1mdiff --git a/Dockerfile b/Dockerfile[m
+[1mindex 9c58094..3618058 100644[m
+[1m--- a/Dockerfile[m
+[1m+++ b/Dockerfile[m
+[36m@@ -1,97 +1,97 @@[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# PROMPTVAULT DOCKERFILE[m
+[31m-#[m
+[31m-# SKILL: Multi-stage awareness, layer caching, production best practices[m
+[31m-#[m
+[31m-# Base image: python:3.11-slim[m
+[31m-#   - "slim" = minimal Debian image with Python[m
+[31m-#   - Much smaller than python:3.11 (full)[m
+[31m-#   - 125MB vs 900MB — matters for deployment speed and storage[m
+[31m-#[m
+[31m-# We use a single-stage build here (appropriate for a portfolio project).[m
+[31m-# In production you would use multi-stage builds to separate[m
+[31m-# build dependencies from runtime dependencies.[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-FROM python:3.11-slim[m
+[31m-[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# ENVIRONMENT VARIABLES[m
+[31m-#[m
+[31m-# PYTHONDONTWRITEBYTECODE=1[m
+[31m-#   Prevents Python from writing .pyc files to disk inside the container.[m
+[31m-#   We don't need them — they just waste space.[m
+[31m-#[m
+[31m-# PYTHONUNBUFFERED=1[m
+[31m-#   Prevents Python from buffering stdout/stderr.[m
+[31m-#   Without this, your logs appear with a delay or not at all[m
+[31m-#   in Docker's logging system. Always set this in containers.[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-ENV PYTHONDONTWRITEBYTECODE=1 \[m
+[31m-    PYTHONUNBUFFERED=1 \[m
+[31m-    PIP_NO_CACHE_DIR=1 \[m
+[31m-    PIP_DISABLE_PIP_VERSION_CHECK=1[m
+[31m-[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# SYSTEM DEPENDENCIES[m
+[31m-#[m
+[31m-# libpq-dev  → PostgreSQL client library (needed by psycopg2)[m
+[31m-# gcc        → C compiler (needed by some Python packages)[m
+[31m-# --no-install-recommends → don't install optional packages (smaller image)[m
+[31m-# rm -rf /var/lib/apt/lists/* → clean apt cache after install (smaller image)[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-RUN apt-get update \[m
+[31m-    && apt-get install -y --no-install-recommends \[m
+[31m-        libpq-dev \[m
+[31m-        gcc \[m
+[31m-    && rm -rf /var/lib/apt/lists/*[m
+[31m-[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# WORKING DIRECTORY[m
+[31m-# All subsequent commands run from this directory inside the container.[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-WORKDIR /app[m
+[31m-[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# DEPENDENCY INSTALLATION[m
+[31m-#[m
+[31m-# CRITICAL LAYER CACHING TRICK:[m
+[31m-# We copy requirements.txt FIRST, install dependencies, THEN copy code.[m
+[31m-#[m
+[31m-# Why: Docker caches each layer. If we copied all code first,[m
+[31m-# then installed dependencies, EVERY code change would invalidate[m
+[31m-# the pip install layer and force a full reinstall (3-5 minutes).[m
+[31m-#[m
+[31m-# By copying requirements.txt first:[m
+[31m-# - If only your code changed → pip layer is cached, rebuild is fast[m
+[31m-# - If requirements.txt changed → pip layer rebuilds (expected)[m
+[31m-#[m
+[31m-# This is the most important Dockerfile optimization and shows[m
+[31m-# you understand how Docker layer caching works.[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-COPY requirements.docker.txt .[m
+[31m-RUN pip install --no-cache-dir -r requirements.docker.txt[m
+[31m-[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# APPLICATION CODE[m
+[31m-# Copy everything else AFTER dependencies are installed.[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-COPY . .[m
+[31m-[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# PORT EXPOSURE[m
+[31m-# Tells Docker that this container listens on port 8000.[m
+[31m-# This is documentation — actual port mapping is in docker-compose.yml.[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-EXPOSE 8000[m
+[31m-[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[31m-# DEFAULT COMMAND[m
+[31m-# What runs when this container starts.[m
+[31m-# Can be overridden in docker-compose.yml (we do this for Celery worker).[m
+[31m-#[m
+[31m-# --host 0.0.0.0 → listen on all interfaces (required in containers)[m
+[31m-# --port 8000    → the port inside the container[m
+[31m-# --workers 1    → single worker for development[m
+[31m-# No --reload    → reload is for development only, not containers[m
+[31m-# ─────────────────────────────────────────────────────────────────────[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# PROMPTVAULT DOCKERFILE[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# SKILL: Multi-stage awareness, layer caching, production best practices[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# Base image: python:3.11-slim[m[41m[m
+[32m+[m[32m#   - "slim" = minimal Debian image with Python[m[41m[m
+[32m+[m[32m#   - Much smaller than python:3.11 (full)[m[41m[m
+[32m+[m[32m#   - 125MB vs 900MB — matters for deployment speed and storage[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# We use a single-stage build here (appropriate for a portfolio project).[m[41m[m
+[32m+[m[32m# In production you would use multi-stage builds to separate[m[41m[m
+[32m+[m[32m# build dependencies from runtime dependencies.[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32mFROM python:3.11-slim[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# ENVIRONMENT VARIABLES[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# PYTHONDONTWRITEBYTECODE=1[m[41m[m
+[32m+[m[32m#   Prevents Python from writing .pyc files to disk inside the container.[m[41m[m
+[32m+[m[32m#   We don't need them — they just waste space.[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# PYTHONUNBUFFERED=1[m[41m[m
+[32m+[m[32m#   Prevents Python from buffering stdout/stderr.[m[41m[m
+[32m+[m[32m#   Without this, your logs appear with a delay or not at all[m[41m[m
+[32m+[m[32m#   in Docker's logging system. Always set this in containers.[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32mENV PYTHONDONTWRITEBYTECODE=1 \[m[41m[m
+[32m+[m[32m    PYTHONUNBUFFERED=1 \[m[41m[m
+[32m+[m[32m    PIP_NO_CACHE_DIR=1 \[m[41m[m
+[32m+[m[32m    PIP_DISABLE_PIP_VERSION_CHECK=1[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# SYSTEM DEPENDENCIES[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# libpq-dev  → PostgreSQL client library (needed by psycopg2)[m[41m[m
+[32m+[m[32m# gcc        → C compiler (needed by some Python packages)[m[41m[m
+[32m+[m[32m# --no-install-recommends → don't install optional packages (smaller image)[m[41m[m
+[32m+[m[32m# rm -rf /var/lib/apt/lists/* → clean apt cache after install (smaller image)[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32mRUN apt-get update \[m[41m[m
+[32m+[m[32m    && apt-get install -y --no-install-recommends \[m[41m[m
+[32m+[m[32m        libpq-dev \[m[41m[m
+[32m+[m[32m        gcc \[m[41m[m
+[32m+[m[32m    && rm -rf /var/lib/apt/lists/*[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# WORKING DIRECTORY[m[41m[m
+[32m+[m[32m# All subsequent commands run from this directory inside the container.[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32mWORKDIR /app[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# DEPENDENCY INSTALLATION[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# CRITICAL LAYER CACHING TRICK:[m[41m[m
+[32m+[m[32m# We copy requirements.txt FIRST, install dependencies, THEN copy code.[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# Why: Docker caches each layer. If we copied all code first,[m[41m[m
+[32m+[m[32m# then installed dependencies, EVERY code change would invalidate[m[41m[m
+[32m+[m[32m# the pip install layer and force a full reinstall (3-5 minutes).[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# By copying requirements.txt first:[m[41m[m
+[32m+[m[32m# - If only your code changed → pip layer is cached, rebuild is fast[m[41m[m
+[32m+[m[32m# - If requirements.txt changed → pip layer rebuilds (expected)[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# This is the most important Dockerfile optimization and shows[m[41m[m
+[32m+[m[32m# you understand how Docker layer caching works.[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32mCOPY requirements.docker.txt .[m[41m[m
+[32m+[m[32mRUN pip install --no-cache-dir -r requirements.docker.txt[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# APPLICATION CODE[m[41m[m
+[32m+[m[32m# Copy everything else AFTER dependencies are installed.[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32mCOPY . .[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# PORT EXPOSURE[m[41m[m
+[32m+[m[32m# Tells Docker that this container listens on port 8000.[m[41m[m
+[32m+[m[32m# This is documentation — actual port mapping is in docker-compose.yml.[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32mEXPOSE 8000[m[41m[m
+[32m+[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+[32m+[m[32m# DEFAULT COMMAND[m[41m[m
+[32m+[m[32m# What runs when this container starts.[m[41m[m
+[32m+[m[32m# Can be overridden in docker-compose.yml (we do this for Celery worker).[m[41m[m
+[32m+[m[32m#[m[41m[m
+[32m+[m[32m# --host 0.0.0.0 → listen on all interfaces (required in containers)[m[41m[m
+[32m+[m[32m# --port 8000    → the port inside the container[m[41m[m
+[32m+[m[32m# --workers 1    → single worker for development[m[41m[m
+[32m+[m[32m# No --reload    → reload is for development only, not containers[m[41m[m
+[32m+[m[32m# ─────────────────────────────────────────────────────────────────────[m[41m[m
+ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"][m
+\ No newline at end of file[m
+[1mdiff --git a/requirements.docker.txt b/requirements.docker.txt[m
+[1mindex 01efb5a..9c1062d 100644[m
+[1m--- a/requirements.docker.txt[m
+[1m+++ b/requirements.docker.txt[m
+[36m@@ -1,11 +1,11 @@[m
+[31m-alembic==1.13.1[m
+[31m-asyncpg==0.29.0[m
+[31m-celery==5.3.6[m
+[31m-fastapi==0.111.0[m
+[31m-psycopg2-binary==2.9.9[m
+[31m-pydantic==2.7.1[m
+[31m-pydantic-settings==2.2.1[m
+[31m-python-dotenv==1.0.1[m
+[31m-redis==4.6.0[m
+[31m-SQLAlchemy==2.0.30[m
+[32m+[m[32malembic==1.13.1[m[41m[m
+[32m+[m[32masyncpg==0.29.0[m[41m[m
+[32m+[m[32mcelery==5.3.6[m[41m[m
+[32m+[m[32mfastapi==0.111.0[m[41m[m
+[32m+[m[32mpsycopg2-binary==2.9.9[m[41m[m
+[32m+[m[32mpydantic==2.7.1[m[41m[m
+[32m+[m[32mpydantic-settings==2.2.1[m[41m[m
+[32m+[m[32mpython-dotenv==1.0.1[m[41m[m
+[32m+[m[32mredis==4.6.0[m[41m[m
+[32m+[m[32mSQLAlchemy==2.0.30[m[41m[m
+ uvicorn==0.29.0[m
+\ No newline at end of file[m

@@ -43,6 +43,7 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     # ── SERVICE CONTAINERS ──────────────────────────────────────────
     # GitHub spins these up before your steps run.
@@ -120,7 +121,7 @@ jobs:
           CELERY_BROKER_URL: redis://localhost:6379/1
           CELERY_RESULT_BACKEND: redis://localhost:6379/2
         run: |
-          pytest \
+          pytest -o addopts="" \
             --cov=app \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \

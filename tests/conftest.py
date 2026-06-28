@@ -10,12 +10,12 @@ from httpx import AsyncClient, ASGITransport
 import fakeredis.aioredis
 import psycopg2
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
     AsyncSession,
     async_sessionmaker,
 )
-from sqlalchemy.pool import NullPool
 
 from app.main import app
 from app.db.base import Base
@@ -56,18 +56,6 @@ def _sync_create_tables():
     conn.close()
 
 
-def _sync_truncate_tables():
-    """Truncate all tables synchronously between tests."""
-    conn = psycopg2.connect(SYNC_TEST_DB_URL)
-    conn.autocommit = True
-    cur = conn.cursor()
-    cur.execute(
-        "TRUNCATE TABLE evaluation_jobs, prompts, workspaces RESTART IDENTITY CASCADE;"
-    )
-    cur.close()
-    conn.close()
-
-
 # ─────────────────────────────────────────────────────────────────────
 # SESSION FIXTURE — sync, runs once per test session
 # ─────────────────────────────────────────────────────────────────────
@@ -84,38 +72,50 @@ def setup_test_database():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# FUNCTION FIXTURE — sync, runs before each test
+# ASYNC DB SESSION — wrap each test in a transaction that rolls back
 # ─────────────────────────────────────────────────────────────────────
-@pytest.fixture(autouse=True)
-def clean_tables(setup_test_database):
-    """Truncate all tables before each test for isolation."""
-    _sync_truncate_tables()
-
-
-# ─────────────────────────────────────────────────────────────────────
-# ASYNC DB SESSION — NullPool prevents connection reuse between tests
-# ─────────────────────────────────────────────────────────────────────
-@pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Provides a fresh async DB session per test."""
+@pytest_asyncio.fixture(scope="session")
+async def async_engine():
+    """Shared async engine for the whole test session."""
     engine = create_async_engine(
         TEST_DATABASE_URL,
-        poolclass=NullPool,   # No connection reuse — each test gets fresh
         echo=False,
     )
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
+    """Provides an isolated async DB session per test.
+
+    The outer transaction is rolled back after each test, so data changes
+    never leak between tests and we avoid expensive table truncation.
+    """
+    connection = await async_engine.connect()
+    transaction = await connection.begin()
     session_factory = async_sessionmaker(
-        bind=engine,
+        bind=connection,
         class_=AsyncSession,
         expire_on_commit=False,
         autocommit=False,
         autoflush=False,
     )
-    async with session_factory() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
-    await engine.dispose()
+    session = session_factory()
+
+    @event.listens_for(session.sync_session, "after_transaction_end")
+    def restart_nested_transaction(session_obj, transaction_obj):
+        if transaction_obj.nested and not transaction_obj._parent.nested:
+            session_obj.begin_nested()
+
+    await session.begin_nested()
+
+    try:
+        yield session
+    finally:
+        await session.close()
+        await transaction.rollback()
+        await connection.close()
 
 
 # ─────────────────────────────────────────────────────────────────────
