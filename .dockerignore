@@ -1,0 +1,42 @@
+# Virtual environment — never goes in container
+venv/
+.venv/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+tests/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment files (secrets injected via docker-compose)
+.env
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+*.idea/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Airflow (runs separately, not in main containers)
+dags/
+airflow/
+
+# Documentation
+*.md
+README*

@@ -1,0 +1,194 @@
+# ─────────────────────────────────────────────────────────────────────
+# PROMPTVAULT DOCKER COMPOSE
+#
+# SKILL: Multi-service orchestration, service networking, volumes,
+#        health checks, environment variables, service dependencies
+#
+# Services defined here:
+#   db       → PostgreSQL database
+#   redis    → Redis cache and Celery broker
+#   api      → FastAPI application
+#   worker   → Celery background worker
+#
+# All services share the "promptvault_network" so they can
+# communicate with each other using service names as hostnames.
+# Inside the containers:
+#   db:5432      → reaches PostgreSQL
+#   redis:6379   → reaches Redis
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────
+  # POSTGRESQL DATABASE
+  # ─────────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    # alpine = minimal Linux base, even smaller than slim
+    # postgres:16-alpine is ~80MB vs postgres:16 at ~400MB
+
+    container_name: promptvault_db
+
+    environment:
+      # These environment variables are read by the official
+      # PostgreSQL image on first startup to create the database
+      POSTGRES_USER: promptvault_user
+      POSTGRES_PASSWORD: promptvault_pass
+      POSTGRES_DB: promptvault
+
+    volumes:
+      # Named volume: PostgreSQL stores data here
+      # Without this volume, ALL data is lost when the container stops
+      # With this volume, data persists between restarts
+      - postgres_data:/var/lib/postgresql/data
+
+    ports:
+      # host_port:container_port
+      # Maps port 5433 on your Windows machine to 5432 inside the container
+      # We use 5433 (not 5432) to avoid conflict with your local PostgreSQL
+      - "5433:5432"
+
+    healthcheck:
+      # Docker will check this command every 5 seconds
+      # If it fails 5 times, the container is marked "unhealthy"
+      # Other services that depend_on db with condition: service_healthy
+      # will wait until this passes before starting
+      test: ["CMD-SHELL", "pg_isready -U promptvault_user -d promptvault"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      - promptvault_network
+
+  # ─────────────────────────────────────────────────────────────────
+  # REDIS
+  # ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+
+    container_name: promptvault_redis
+
+    ports:
+      - "6380:6379"
+      # Using 6380 on host to avoid conflict with your local Memurai
+
+    volumes:
+      - redis_data:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+    networks:
+      - promptvault_network
+
+  # ─────────────────────────────────────────────────────────────────
+  # FASTAPI APPLICATION
+  # ─────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .          # Build from current directory
+      dockerfile: Dockerfile
+
+    container_name: promptvault_api
+
+    # Environment variables for the container
+    # These override what is in .env file
+    # DATABASE_URL uses "db" (service name) instead of "localhost"
+    # because inside Docker network, services find each other by name
+    environment:
+      APP_NAME: PromptVault
+      APP_VERSION: "0.1.0"
+      DEBUG: "true"
+      DATABASE_URL: postgresql+asyncpg://promptvault_user:promptvault_pass@db:5432/promptvault
+      REDIS_URL: redis://redis:6379/0
+      REDIS_TTL_SECONDS: "300"
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+
+    ports:
+      - "8000:8000"
+
+    # depends_on with health checks:
+    # The API container will NOT start until both db and redis
+    # are healthy. This prevents "connection refused" errors on startup.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    # Alembic migration runs before the API starts
+    # This ensures the database tables exist before the app accepts traffic
+    # In production this would be a separate init container
+    command: >
+      sh -c "
+        echo 'Running database migrations...' &&
+        alembic upgrade head &&
+        echo 'Starting API server...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+
+    networks:
+      - promptvault_network
+
+    # Mount source code for development hot reload
+    # Comment this out for production builds
+    volumes:
+      - .:/app
+
+  # ─────────────────────────────────────────────────────────────────
+  # CELERY WORKER
+  # ─────────────────────────────────────────────────────────────────
+  worker:
+    # Reuse the same image as the API
+    # They have the same code — just a different startup command
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: promptvault_worker
+
+    environment:
+      DATABASE_URL: postgresql+asyncpg://promptvault_user:promptvault_pass@db:5432/promptvault
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+
+    # Override the default CMD from Dockerfile
+    # --pool=solo needed on some environments; use --pool=prefork in production Linux
+    command: celery -A app.worker.celery_app worker --loglevel=info --pool=solo
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    networks:
+      - promptvault_network
+
+    volumes:
+      - .:/app
+
+# ─────────────────────────────────────────────────────────────────────
+# NAMED VOLUMES
+# Docker manages these — they persist data between container restarts
+# Listed here at the top level so Docker knows to create them
+# ─────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+
+# ─────────────────────────────────────────────────────────────────────
+# NETWORK
+# All services on the same network can reach each other by service name
+# Isolated from other Docker containers on your machine
+# ─────────────────────────────────────────────────────────────────────
+networks:
+  promptvault_network:
+    driver: bridge
