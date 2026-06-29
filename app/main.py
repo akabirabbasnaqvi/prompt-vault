@@ -1,6 +1,6 @@
 """
 app/main.py
-PromptVault API entry point.
+PromptVault API entry point — Step 11: Structured logging added.
 """
 
 import os
@@ -15,54 +15,55 @@ from sqlalchemy import text
 import pydantic
 
 from app.core.config import settings
-from app.db.session import engine, get_db
+from app.core.logging_config import configure_logging
 from app.core.cache import redis_client, check_redis_health
-from app.api.v1 import workspaces as workspaces_router
-from app.api.v1 import prompts as prompts_router
-from app.api.v1 import evaluations as evaluations_router
-
+from app.db.session import engine, get_db
+from app.middleware.logging_middleware import RequestLoggingMiddleware
 
 load_dotenv()
 
-# ── LOGGING ───────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# ── CONFIGURE STRUCTURED LOGGING FIRST ───────────────────────────────
+# Must be called before any logger.info() calls anywhere.
+# After this, ALL log output is structured JSON.
+configure_logging()
+
 logger = logging.getLogger(__name__)
 
 
 # ── LIFESPAN ──────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
-    logger.info(f"Debug mode: {settings.debug}")
+    logger.info(
+        "Application starting",
+        extra={
+            "app_name": settings.app_name,
+            "version": settings.app_version,
+            "debug": settings.debug,
+        }
+    )
 
     # Check database
-    logger.info("Checking database connection...")
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-        logger.info("Database connection verified successfully.")
+        logger.info("Database connection verified")
     except Exception as e:
-        logger.error(f"Database connection FAILED: {e}")
+        logger.error("Database connection failed", extra={"error": str(e)})
 
     # Check Redis
-    logger.info("Checking Redis connection...")
     try:
         await redis_client.ping()
-        logger.info("Redis connection verified successfully.")
+        logger.info("Redis connection verified")
     except Exception as e:
-        logger.error(f"Redis connection FAILED: {e}")
+        logger.error("Redis connection failed", extra={"error": str(e)})
 
-    logger.info("PromptVault API is ready to accept requests.")
+    logger.info("PromptVault API ready to accept requests")
     yield
 
-    logger.info("Shutting down PromptVault API...")
+    logger.info("Application shutting down")
     await redis_client.aclose()
     await engine.dispose()
-    logger.info("All connections closed. Goodbye.")
+    logger.info("All connections closed")
 
 
 # ── FASTAPI APP ───────────────────────────────────────────────────────
@@ -79,6 +80,12 @@ app = FastAPI(
     debug=settings.debug,
     lifespan=lifespan,
 )
+
+# ── ADD MIDDLEWARE ────────────────────────────────────────────────────
+# Middleware is added AFTER app creation, BEFORE routers.
+# Order matters: first added = outermost = runs first on request,
+# last on response.
+app.add_middleware(RequestLoggingMiddleware)
 
 
 # ── GENERAL ENDPOINTS ─────────────────────────────────────────────────
@@ -106,7 +113,6 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> JSONResponse:
         },
     }
 
-    # Check database
     try:
         await db.execute(text("SELECT 1"))
         health_data["checks"]["database"] = "healthy"
@@ -114,14 +120,13 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> JSONResponse:
     except Exception as e:
         health_data["checks"]["database"] = f"unhealthy: {str(e)}"
         health_data["status"] = "degraded"
-        logger.warning(f"Health check: database FAILED — {e}")
+        logger.warning("Health check: database FAILED", extra={"error": str(e)})
 
-    # Check Redis
     redis_health = await check_redis_health()
     health_data["checks"]["redis"] = redis_health
     if redis_health["status"] != "healthy":
         health_data["status"] = "degraded"
-        logger.warning(f"Health check: Redis FAILED — {redis_health}")
+        logger.warning("Health check: Redis FAILED", extra={"redis": redis_health})
 
     http_status = 200 if health_data["status"] == "healthy" else 503
     return JSONResponse(content=health_data, status_code=http_status)
@@ -137,6 +142,10 @@ async def api_v1_status() -> dict:
 
 
 # ── ROUTERS ───────────────────────────────────────────────────────────
+from app.api.v1 import workspaces as workspaces_router
+from app.api.v1 import prompts as prompts_router
+from app.api.v1 import evaluations as evaluations_router
+
 app.include_router(workspaces_router.router, prefix="/api/v1")
 app.include_router(prompts_router.router, prefix="/api/v1")
 app.include_router(evaluations_router.router, prefix="/api/v1")
